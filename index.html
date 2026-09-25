@@ -268,6 +268,7 @@ textarea{resize:vertical;min-height:72px}
         <div class="field"><span>Tốc độ tăng</span>
           <div class="seg" data-key="growth" role="group"><button type="button" data-v="slow">Chậm</button><button type="button" data-v="normal">Vừa</button><button type="button" data-v="fast">Nhanh</button><button type="button" data-v="boom">Bùng nổ</button></div>
         </div>
+        <label class="field" for="fStartMin"><span>Đồng hồ live bắt đầu từ (phút)</span><input id="fStartMin" type="number" inputmode="numeric" min="0" max="1440"><small>VD: 45 → mở lên đồng hồ hiện 45:00 rồi chạy tiếp; 90 → 1:30:00. Để 0 nếu muốn bắt đầu từ đầu.</small></label>
       </section>
 
       <section class="group">
@@ -425,7 +426,7 @@ const fmtTime = s => {
 };
 
 /* ---------------- Settings ---------------- */
-const DEF = { name: '', avatar: '😎', avatarData: '', pin: '', followers: 12500, followBtn: 'on', start: 120, max: 25000, growth: 'normal', density: 'normal',
+const DEF = { name: '', avatar: '😎', avatarData: '', pin: '', followers: 12500, followBtn: 'on', start: 120, max: 25000, growth: 'normal', startMin: 0, density: 'normal',
   topics: ['general'], english: true, gifts: true, giftLevel: 'normal', coins: 150000, sound: true, joins: true, voice: true, custom: '', source: 'camera', facing: 'user', mirror: true, beauty: 1 };
 const S = Object.assign({}, DEF);
 const KEY = 'song-live-settings';
@@ -547,7 +548,7 @@ function syncAvatars() {
   const up = $('#avUp'); up.hidden = !S.avatarData; up.innerHTML = ''; if (S.avatarData) { const i = document.createElement('img'); i.src = S.avatarData; i.alt = ''; up.appendChild(i); up.classList.toggle('on', !S.avatar); }
 }
 function writeForm() {
-  $('#fName').value = S.name; $('#fPin').value = S.pin; $('#fFollowers').value = S.followers; $('#fStart').value = S.start; $('#fMax').value = S.max;
+  $('#fName').value = S.name; $('#fPin').value = S.pin; $('#fFollowers').value = S.followers; $('#fStart').value = S.start; $('#fMax').value = S.max; $('#fStartMin').value = S.startMin;
   $('#fEnglish').checked = S.english; $('#fGifts').checked = S.gifts; $('#fJoins').checked = S.joins; $('#fCustom').value = S.custom; $('#fMirror').checked = S.mirror;
   $('#fCoins').value = S.coins; $('#fSound').checked = S.sound; $('#fVoice').checked = S.voice;
   $$('#topics input').forEach(i => { i.checked = S.topics.includes(i.dataset.topic) || i.dataset.topic === 'general'; i.disabled = i.dataset.topic === 'general'; i.closest('.chip').classList.toggle('on', i.checked); });
@@ -561,6 +562,7 @@ function bindForm() {
   $('#fFollowers').addEventListener('change', e => { S.followers = clamp(parseInt(e.target.value, 10) || 0, 0, 99999999); e.target.value = S.followers; paintFollow(); });
   $('#fStart').addEventListener('change', e => { S.start = clamp(parseInt(e.target.value, 10) || 1, 1, 9999999); e.target.value = S.start; });
   $('#fMax').addEventListener('change', e => { S.max = clamp(parseInt(e.target.value, 10) || 1, 1, 9999999); e.target.value = S.max; });
+  $('#fStartMin').addEventListener('change', e => { S.startMin = clamp(parseInt(e.target.value, 10) || 0, 0, 1440); e.target.value = S.startMin; if (sim.running) { sim.startTs = Date.now() - S.startMin * 60000; $('#timer').textContent = fmtTime(Math.floor(sim.elapsed())); } });
   $('#fEnglish').addEventListener('change', e => S.english = e.target.checked);
   $('#fGifts').addEventListener('change', e => S.gifts = e.target.checked);
   $('#fCoins').addEventListener('change', e => { S.coins = clamp(parseInt(e.target.value, 10) || 0, 0, 999999999); e.target.value = S.coins; if (!sim.running) { sim.coins = S.coins; paintCoins(false); } });
@@ -794,7 +796,13 @@ const sim = {
   sched(name, fn, delay) { clearTimeout(this.timers[name]); this.timers[name] = setTimeout(() => { if (!this.running) return; fn(); }, delay); },
   loop(name, fn, delayFn) { const run = () => { if (!this.running) return; fn(); this.sched(name, run, delayFn()); }; this.sched(name, run, delayFn()); },
   start() {
-    this.running = true; this.startTs = Date.now(); this.viewers = S.start; this.peak = S.start; this.total = S.start; this.likes = Math.round(S.start * rand(1.5, 4)); this.follows = 0; this.coins = S.coins; this.comments = 0; this.milestone = 0; recent = [];
+    // Đồng hồ có thể bắt đầu từ phút thứ N; lượt thích, tổng xem, bình luận được cộng thêm cho hợp với thời gian đã live
+    const pre = S.startMin || 0;
+    this.running = true; this.startTs = Date.now() - pre * 60000; this.viewers = S.start; this.peak = S.start;
+    this.total = Math.round(S.start * (1 + pre * rand(.04, .08))); this.likes = Math.round(S.start * rand(1.5, 4) + S.start * pre * rand(.4, .9));
+    this.follows = 0; this.coins = S.coins; this.comments = Math.round(S.start * pre * rand(.15, .3)); recent = [];
+    this.milestone = [1000, 5000, 10000, 50000, 100000, 500000, 1000000].filter(m => S.start >= m).pop() || 0; // không báo "đạt 1K" nếu đã bắt đầu từ 5K
+    $('#timer').textContent = fmtTime(Math.floor(this.elapsed()));
     feed.innerHTML = ''; hearts.innerHTML = ''; giftBanner.hidden = true; toastEl.hidden = true;
     $('#plusBtn').classList.remove('done'); $('#plusBtn').textContent = '+'; paintCoins(false); paintFollow();
     addLine('sys', '<div class="body">Chào mừng đến với phòng live. Hãy tôn trọng mọi người và tuân thủ quy tắc cộng đồng. Bình luận vi phạm sẽ bị ẩn.</div>');
