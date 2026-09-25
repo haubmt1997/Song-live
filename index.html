@@ -608,8 +608,19 @@ function applyMedia() {
   media.classList.remove('b1', 'b2', 'b3'); if (S.beauty > 0) media.classList.add('b' + S.beauty);
   $('#beautyBtn').classList.toggle('on', S.beauty > 0);
 }
-let stream = null;
+let stream = null, camReq = 0, camWatch = 0, camBad = 0, camStartedAt = 0;
 function stopCamera() { if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } cam.srcObject = null; }
+/* Canh camera: iPhone (nhất là khi mở từ màn hình chính) đôi lúc cấp stream nhưng hình đen hoặc track bị tắt khi app ra sau.
+   Nếu 2 lần kiểm tra liên tiếp (4 giây) không có hình → hiện nút "Bật camera" để chạm mở lại. */
+function camHealthy() { const t = stream && stream.getVideoTracks()[0]; return !!t && t.readyState === 'live' && !t.muted && cam.videoWidth > 0 && !cam.paused; }
+function watchCamera() {
+  clearInterval(camWatch); camBad = 0;
+  camWatch = setInterval(() => {
+    if (!sim.running || S.source !== 'camera' || !stream || Date.now() - camStartedAt < 3000) return;
+    if (camHealthy()) { camBad = 0; if (!nocam.hidden) { nocam.hidden = true; cam.hidden = false; } return; }
+    if (++camBad >= 2) showNoCam(document.visibilityState === 'visible' ? 'Camera chưa lên hình. Chạm "Bật camera" để mở lại. Nếu vẫn đen: tắt 🎙️ rồi bật lại camera, hoặc mở bằng Safari.' : 'Camera tạm dừng khi app ở nền.');
+  }, 2000);
+}
 function camAllowed() {
   try { const fp = document.permissionsPolicy || document.featurePolicy; if (fp && typeof fp.allowsFeature === 'function') return fp.allowsFeature('camera'); } catch (e) {}
   return true;
@@ -620,16 +631,23 @@ async function startCamera() {
     showNoCam(window.self !== window.top ? 'Ở chế độ xem trước, camera bị chặn. Tải file về điện thoại và mở trực tiếp bằng Chrome hoặc Safari để dùng camera thật. Tạm thời bạn có thể dùng ảnh hoặc video có sẵn.' : 'Trình duyệt này không cho dùng camera ở đây. Thử mở bằng Chrome hoặc Safari.');
     return false;
   }
+  const req = ++camReq; // bỏ qua kết quả của lần gọi cũ nếu người dùng đã bấm lại
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: S.facing, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
-    cam.srcObject = stream; cam.removeAttribute('src'); cam.loop = false; nocam.hidden = true;
+    const gum = navigator.mediaDevices.getUserMedia({ video: { facingMode: S.facing, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    const timeout = new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error('timeout'), { name: 'TimeoutError' })), 12000));
+    const s = await Promise.race([gum, timeout]);
+    if (req !== camReq) { s.getTracks().forEach(t => t.stop()); return false; }
+    stream = s; cam.srcObject = stream; cam.removeAttribute('src'); cam.loop = false; nocam.hidden = true; cam.hidden = false; camStartedAt = Date.now(); camBad = 0;
+    const tr = stream.getVideoTracks()[0]; if (tr) tr.addEventListener('ended', () => { camBad = 1; });
     await cam.play().catch(() => {});
     applyMedia(); return true;
   } catch (err) {
+    if (req !== camReq) return false;
     const n = err && err.name;
     showNoCam(n === 'NotAllowedError' || n === 'PermissionDeniedError' ? (isIOS ? 'Bạn chưa cho phép camera. Trong Safari bấm "aA" trên thanh địa chỉ → Cài đặt trang web → Camera → Cho phép, hoặc vào Cài đặt → Safari → Camera. Rồi bấm "Bật camera".' : 'Bạn chưa cho phép camera. Bấm biểu tượng ổ khoá cạnh địa chỉ trang → Quyền → bật Camera, rồi bấm "Bật camera".')
       : n === 'NotFoundError' || n === 'OverconstrainedError' ? 'Không tìm thấy camera phù hợp. Thử đổi camera trước / sau.'
       : n === 'NotReadableError' ? 'Camera đang bị ứng dụng khác dùng. Tắt ứng dụng đó rồi thử lại.'
+      : n === 'TimeoutError' ? 'Không thấy hộp thoại cho phép camera. Bấm "Bật camera" để thử lại; nếu mở từ màn hình chính vẫn không được thì mở bằng Safari.'
       : 'Không mở được camera. Bạn có thể dùng ảnh hoặc video có sẵn.');
     return false;
   }
@@ -643,7 +661,7 @@ function useMediaFile() {
   else { cam.hidden = true; still.hidden = false; still.src = mediaURL; }
   applyMedia();
 }
-function restartVisual() { if (S.source === 'camera') startCamera(); else useMediaFile(); }
+function restartVisual() { if (S.source === 'camera') return startCamera(); useMediaFile(); return Promise.resolve(true); }
 
 /* ---------------- Feed ---------------- */
 let recent = [];
@@ -781,8 +799,13 @@ function startMic(quiet) {
       else if (c === 'network') toast('Nghe giọng nói cần có mạng.');
     };
     rec.onend = () => { if (listening) { clearTimeout(recRestartT); recRestartT = setTimeout(() => { try { rec.start(); } catch (e) {} }, 350); } };
+    const camWasOk = S.source === 'camera' && camHealthy();
     rec.start(); listening = true; paintMic();
     if (!quiet) toast('🎙️ Đang nghe. Bạn nói gì là người xem trả lời theo.');
+    // Vài iPhone tắt camera khi micro nhận giọng nói bật lên: nếu 2,5 giây sau camera chết → tắt nghe, mở lại camera
+    setTimeout(() => {
+      if (listening && camWasOk && S.source === 'camera' && !camHealthy()) { stopMic(true); startCamera(); toast('Máy này không cho camera và micro chạy cùng lúc, đã tắt nghe giọng nói.'); }
+    }, 2500);
   } catch (e) { listening = false; paintMic(); if (!quiet) toast('Không bật được micro.'); }
 }
 function stopMic(quiet) { const was = listening; listening = false; clearTimeout(recRestartT); try { if (rec) rec.stop(); } catch (e) {} paintMic(); if (was && !quiet) toast('Đã tắt nghe giọng nói.'); }
@@ -862,14 +885,16 @@ async function startLive() {
   save(); setup.hidden = true; stage.hidden = false; $('#summary').hidden = true;
   applyHost(); renderPin(); applyMedia(); nocam.hidden = true;
   if (S.sound) audioInit(); // mở khoá âm thanh ngay trong lần chạm của người dùng
-  sim.start();
-  paintMic(); startMic(true); // bật nghe ngay trong lần chạm (iPhone yêu cầu vậy); lỗi thì bấm 🎙️ sau
+  sim.start(); paintMic();
+  // Xin camera TRƯỚC, micro SAU: xin cùng lúc thì iPhone (nhất là app ở màn hình chính) hay treo một trong hai
   await restartVisual();
+  watchCamera();
   try { const el = document.documentElement; if (el.requestFullscreen) await el.requestFullscreen({ navigationUI: 'hide' }); } catch (e) {}
   requestWake();
+  if (S.voice) setTimeout(() => { startMic(true); setTimeout(() => { if (S.voice && !listening && micSupported() && sim.running) toast('Bấm 🎙️ để bật nghe giọng nói'); }, 900); }, 700);
 }
 function endLive() {
-  sim.stop(); stopMic(true); stopCamera(); cam.pause();
+  sim.stop(); stopMic(true); clearInterval(camWatch); stopCamera(); cam.pause();
   try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (e) {}
   try { if (sim.wake) { sim.wake.release(); sim.wake = null; } } catch (e) {}
   const u = hostUser(); $('#sumAv').replaceWith(Object.assign(avatarEl(u, 'lg'), { id: 'sumAv' })); $('#sumName').textContent = u.name;
@@ -910,7 +935,12 @@ function bindStage() {
   });
   $('#backHome').addEventListener('click', goHome);
   $('#liveAgain').addEventListener('click', () => { formHost.appendChild(form); startLive(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && sim.running) requestWake(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || !sim.running) return;
+    requestWake();
+    // quay lại app: camera hay bị iOS tắt khi ở nền → mở lại
+    if (S.source === 'camera') { const t = stream && stream.getVideoTracks()[0]; if (!t || t.readyState !== 'live') startCamera(); else cam.play().catch(() => {}); }
+  });
   if (window.visualViewport) { window.visualViewport.addEventListener('resize', fitStage); window.visualViewport.addEventListener('scroll', fitStage); }
 }
 
